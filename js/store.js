@@ -2,7 +2,9 @@
 // どちらも同じ API: start(onChange) / add / update / remove / replaceAll / signOut
 import { firebaseConfig } from "./firebase-config.js";
 
-export const COLLECTIONS = ["strategies", "goals", "mons"];
+// recipes: 自分で追加したレシピ / recipeFlags: レシピごとの「目指す」印やメモ（ID はレシピID）
+export const COLLECTIONS = ["strategies", "goals", "mons", "recipes", "recipeFlags"];
+export const emptyData = () => Object.fromEntries(COLLECTIONS.map((c) => [c, {}]));
 
 const FB = "https://www.gstatic.com/firebasejs/10.12.2";
 
@@ -15,7 +17,7 @@ class LocalStore {
   constructor() {
     this.mode = "local";
     this.key = "pss-data-v1";
-    this.data = { strategies: {}, goals: {}, mons: {} };
+    this.data = emptyData();
     try {
       const raw = localStorage.getItem(this.key);
       if (raw) Object.assign(this.data, JSON.parse(raw));
@@ -38,9 +40,15 @@ class LocalStore {
     this.data[col][id] = { ...this.data[col][id], ...obj, updatedAt: Date.now() };
     this.emit();
   }
+  // ID を指定して作成または部分更新
+  async set(col, id, obj) {
+    const prev = this.data[col][id];
+    this.data[col][id] = { createdAt: Date.now(), ...prev, ...obj, updatedAt: Date.now() };
+    this.emit();
+  }
   async remove(col, id) { delete this.data[col][id]; this.emit(); }
   async replaceAll(all) {
-    this.data = { strategies: {}, goals: {}, mons: {}, ...all };
+    this.data = { ...emptyData(), ...all };
     this.emit();
   }
   async signOut() {}
@@ -87,7 +95,7 @@ class FirebaseStore {
   colRef(col) { return this.f.collection(this.db, "users", this.user.uid, col); }
 
   async start(onChange) {
-    const data = { strategies: {}, goals: {}, mons: {} };
+    const data = emptyData();
     let ready = 0;
     COLLECTIONS.forEach((col) => {
       let first = true;
@@ -108,6 +116,9 @@ class FirebaseStore {
   }
   async update(col, id, obj) {
     await this.f.updateDoc(this.f.doc(this.colRef(col), id), { ...obj, updatedAt: Date.now() });
+  }
+  async set(col, id, obj) {
+    await this.f.setDoc(this.f.doc(this.colRef(col), id), { ...obj, updatedAt: Date.now() }, { merge: true });
   }
   async remove(col, id) { await this.f.deleteDoc(this.f.doc(this.colRef(col), id)); }
 
@@ -136,7 +147,8 @@ class FirebaseStore {
 }
 
 export async function createStore() {
-  if (!firebaseConfig) return new LocalStore();
+  // ?local を付けて開くと、Firebase を使わないお試しモード（動作確認用）
+  if (!firebaseConfig || new URLSearchParams(location.search).has("local")) return new LocalStore();
   const s = new FirebaseStore();
   await s.init();
   return s;

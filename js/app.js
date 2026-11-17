@@ -1,6 +1,7 @@
-import { createStore } from "./store.js";
+import { createStore, emptyData, COLLECTIONS } from "./store.js";
 import { POKEDEX } from "./pokedex.js";
 import { calcUrl } from "./nitoyon.js";
+import { BUILTIN_RECIPES, CATEGORIES, INGREDIENTS, baseEnergy } from "./recipes.js";
 
 /* ================= 定数 ================= */
 const GOAL_STATUS = [
@@ -32,7 +33,7 @@ const NAT_BY_EN = new Map(POKEDEX.natures.map((n) => [n.en, n]));
 
 /* ================= 状態 ================= */
 let store;
-let DB = { strategies: {}, goals: {}, mons: {} };
+let DB = emptyData();
 let pendingRender = false;
 const app = document.getElementById("app");
 
@@ -98,6 +99,44 @@ function ingText(mon) {
   return [pick(t[0]), pick(t[1]), pick(t[2])].map((x) => x.n).join(" / ");
 }
 
+/* ================= レシピ ================= */
+const catLabel = (k) => (CATEGORIES.find((c) => c.k === k) || CATEGORIES[0]).label;
+
+// 組み込みレシピ＋自分で追加したレシピ。目指す印などのフラグも合成する
+function allRecipes() {
+  const custom = rows("recipes").map((r) => {
+    const ings = (r.ings || []).filter((x) => x.n && x.c > 0);
+    return {
+      id: r.id, cat: r.cat || "curry", name: r.name || "（無題）", bonus: Number(r.bonus) || 0, ings,
+      total: ings.reduce((p, x) => p + Number(x.c), 0),
+      energy: Number(r.energy) || baseEnergy(ings.map((x) => [x.n, Number(x.c)]), Number(r.bonus) || 0),
+      builtin: false,
+    };
+  });
+  return [...BUILTIN_RECIPES, ...custom].map((r) => ({ ...r, flag: DB.recipeFlags[r.id] || {} }));
+}
+const findRecipe = (id) => allRecipes().find((r) => r.id === id);
+
+function recipeCard(r) {
+  return `<a class="card" href="#/recipe/${r.id}">
+    <div class="row between"><b>${r.flag.target ? "⭐ " : ""}${esc(r.name)}</b><span class="badge plain">${r.total}個</span></div>
+    <div class="small muted">${esc(catLabel(r.cat))} ・ 基本エナジー ${r.energy.toLocaleString()}${r.builtin ? "" : " ・ 追加レシピ"}</div>
+    <div class="chips">${r.ings.map((x) => `<span class="chip ing">${esc(x.n)}×${x.c}</span>`).join("")}</div>
+    ${r.flag.memo ? `<div class="memo">${esc(r.flag.memo)}</div>` : ""}
+  </a>`;
+}
+
+// 食材を持ってくるポケモン（最終進化のみ）。slot: 0=Lv1〜, 1=Lv30〜, 2=Lv60〜
+function pokemonWithIngredient(ingName) {
+  const out = [];
+  for (const p of POKEDEX.pokemon) {
+    if (!p.final) continue;
+    const slot = p.ing.findIndex((x) => x.n === ingName);
+    if (slot >= 0) out.push({ p, slot });
+  }
+  return out.sort((a, b) => a.slot - b.slot || (a.p.sp === "食材" ? -1 : 0) - (b.p.sp === "食材" ? -1 : 0));
+}
+
 /* ================= カード部品 ================= */
 function monCard(m, { showGoal = true } = {}) {
   const p = PK_BY_EN.get(m.pokemon);
@@ -145,6 +184,7 @@ function viewHome() {
   const hunting = rows("mons").filter((m) => (m.status || "hunting") === "hunting");
   const { counts } = goalProgress(goals);
   const openGoals = goals.filter((g) => g.status !== "done").sort((a, b) => statusIdx(a.status) - statusIdx(b.status));
+  const targets = allRecipes().filter((r) => r.flag.target);
 
   return `
   <h1>ホーム</h1>
@@ -164,6 +204,10 @@ function viewHome() {
         ${progressBar(sg)}
       </a>`;
     }).join("") : '<div class="empty">まだ方針がありません。「＋ 方針」から作成しましょう。</div>'}
+  </section>
+  <section>
+    <div class="row between"><h2>⭐ 目指す料理</h2><a class="btn sm" href="#/recipes?cat=all">料理一覧</a></div>
+    ${targets.length ? targets.map(recipeCard).join("") : '<div class="empty">料理一覧で「☆ 目指す料理にする」を押すとここに出ます</div>'}
   </section>
   <section>
     <h2>厳選中の個体</h2>
@@ -207,6 +251,10 @@ function viewStrategy(id) {
     <div class="row between"><h2>目標（${goals.length}）</h2><a class="btn sm" href="#/goal-edit/new?strategy=${id}">＋ 目標</a></div>
     ${goals.map(goalCard).join("") || '<div class="empty">この方針の目標はまだありません</div>'}
   </section>
+  ${(() => {
+    const rs = allRecipes().filter((r) => r.flag.strategyId === id);
+    return rs.length ? `<section><h2>関連する料理（${rs.length}）</h2>${rs.map(recipeCard).join("")}</section>` : "";
+  })()}
   <div class="actions"><a class="btn" href="#/strategy-edit/${id}">方針を編集</a></div>
   <div class="small muted">更新: ${fmtDate(s.updatedAt)}</div>`;
 }
@@ -418,6 +466,116 @@ function viewSettings() {
   </section>`;
 }
 
+function loadPot() {
+  try { return localStorage.getItem("pss-pot") || ""; } catch (e) { return ""; }
+}
+
+function viewRecipes(q) {
+  const cat = q.get("cat") || "all";
+  const ing = q.get("ing") || "";
+  const sort = q.get("sort") || "energy";
+  const pot = q.has("pot") ? q.get("pot") : loadPot();
+  let list = allRecipes();
+  if (cat === "target") list = list.filter((r) => r.flag.target);
+  else if (cat !== "all") list = list.filter((r) => r.cat === cat);
+  if (ing) list = list.filter((r) => r.ings.some((x) => x.n === ing));
+  if (Number(pot) > 0) list = list.filter((r) => r.total <= Number(pot));
+  if (sort === "energy") list.sort((a, b) => b.energy - a.energy);
+  else if (sort === "total") list.sort((a, b) => a.total - b.total);
+  const chip = (k, text) => {
+    const p = new URLSearchParams(q);
+    p.set("cat", k);
+    return `<a class="fchip ${cat === k ? "on" : ""}" href="#/recipes?${p}">${text}</a>`;
+  };
+  return `
+  <div class="row between"><h1>料理</h1><a class="btn" href="#/recipe-edit/new">＋ レシピを追加</a></div>
+  <div class="fchips">${chip("all", "すべて")}${chip("target", "⭐ 目指す")}${CATEGORIES.map((c) => chip(c.k, c.label)).join("")}</div>
+  <div class="grid2">
+    <label class="small muted">食材で絞り込み<select data-nav="ing"><option value="">すべての食材</option>
+      ${INGREDIENTS.map((n) => `<option ${n === ing ? "selected" : ""}>${esc(n)}</option>`).join("")}
+    </select></label>
+    <label class="small muted">鍋の容量（以下に絞る）<input type="number" inputmode="numeric" data-nav="pot" value="${esc(pot)}" placeholder="例：57"></label>
+  </div>
+  <label class="small muted">並び順<select data-nav="sort">
+    <option value="energy" ${sort === "energy" ? "selected" : ""}>基本エナジーが高い順</option>
+    <option value="total" ${sort === "total" ? "selected" : ""}>必要食材が少ない順</option>
+    <option value="game" ${sort === "game" ? "selected" : ""}>ゲーム内の順</option>
+  </select></label>
+  <div class="small muted">${list.length}件</div>
+  ${list.map(recipeCard).join("") || '<div class="empty">該当するレシピはありません</div>'}`;
+}
+
+function viewRecipe(id) {
+  const r = findRecipe(id);
+  if (!r) return notFound();
+  const ownedAnc = new Set(rows("mons").filter((m) => m.status !== "released").map((m) => (PK_BY_EN.get(m.pokemon) || {}).anc));
+  const SLOT = ["Lv1〜", "Lv30〜", "Lv60〜"];
+  return `
+  <a class="back" href="#/recipes">← 料理一覧</a>
+  <h1>${esc(r.name)}</h1>
+  <div class="small muted">${esc(catLabel(r.cat))}${r.builtin ? "" : " ・ 追加レシピ"}</div>
+  <section class="kv">
+    <div><span>必要食材の合計</span><div>${r.total}個</div></div>
+    <div><span>基本エナジー（料理Lv1）</span><div>${r.energy.toLocaleString()}${r.bonus ? `（レシピボーナス ${r.bonus}%）` : ""}</div></div>
+  </section>
+  <div class="actions">
+    <button class="btn ${r.flag.target ? "primary" : ""}" data-recipe-target="${r.id}">${r.flag.target ? "⭐ 目指す料理に設定中" : "☆ 目指す料理にする"}</button>
+    ${r.builtin ? "" : `<a class="btn" href="#/recipe-edit/${r.id}">レシピを編集</a>`}
+  </div>
+  <form class="quick" data-quick="recipeFlag" data-id="${r.id}">
+    <label>方針<select name="strategyId"><option value="">（なし）</option>
+      ${rows("strategies").map((s) => `<option value="${s.id}" ${s.id === r.flag.strategyId ? "selected" : ""}>${esc(s.title)}</option>`).join("")}
+    </select></label>
+    <label>メモ<textarea name="memo" rows="2" placeholder="例：次のワカクサ週で狙う。ジンジャー担当が足りない">${esc(r.flag.memo)}</textarea></label>
+    <button class="btn">メモを保存</button>
+  </form>
+  <section>
+    <h2>食材と、持ってくるポケモン</h2>
+    <div class="small muted">最終進化のみ表示。★は手持ちにいる系統です。</div>
+    ${r.ings.map((x) => {
+      const mons = pokemonWithIngredient(x.n);
+      const owned = mons.filter((m) => ownedAnc.has(m.p.anc)).length;
+      return `<details class="card">
+        <summary><b>${esc(x.n)} ×${x.c}</b> <span class="small muted">${mons.length}種${owned ? ` ・ 手持ち系統 ${owned}` : ""}</span></summary>
+        <div class="plist">${mons.map(({ p, slot }) => `<div class="${ownedAnc.has(p.anc) ? "owned" : ""}">
+          ${ownedAnc.has(p.anc) ? "★ " : ""}${esc(p.ja)} <span class="small muted">${p.tentative ? "新ポケモン（枠・個数は未確定）" : `${SLOT[slot]} ×${p.ing[slot].c[slot]} ・ ${esc(p.sp)}`}</span>
+        </div>`).join("") || '<div class="muted small">該当なし</div>'}</div>
+      </details>`;
+    }).join("")}
+  </section>`;
+}
+
+function viewRecipeEdit(id) {
+  const isNew = id === "new";
+  const r = isNew ? { cat: "curry", ings: [] } : DB.recipes[id];
+  if (!r) return notFound();
+  const ings = [...(r.ings || [])];
+  while (ings.length < 6) ings.push({ n: "", c: "" });
+  return `
+  <a class="back" href="${isNew ? "#/recipes" : `#/recipe/${id}`}">← 戻る</a>
+  <h1>${isNew ? "レシピを追加" : "レシピを編集"}</h1>
+  <form class="form" data-form="recipe" data-id="${id}">
+    <label>料理名<input name="name" required value="${esc(r.name)}"></label>
+    <label>種類<select name="cat">${CATEGORIES.map((c) => `<option value="${c.k}" ${c.k === r.cat ? "selected" : ""}>${c.label}</option>`).join("")}</select></label>
+    <fieldset><legend>食材と個数</legend>
+      ${ings.map((x, i) => `<div class="grid-ing">
+        <select name="ingN${i}"><option value="">（なし）</option>${INGREDIENTS.map((n) => `<option ${n === x.n ? "selected" : ""}>${esc(n)}</option>`).join("")}</select>
+        <input name="ingC${i}" type="number" min="0" inputmode="numeric" value="${esc(x.c)}" placeholder="個数">
+      </div>`).join("")}
+      <div class="small muted">食材の種類が新しく増えたときは、Claude に追加を頼んでください。</div>
+    </fieldset>
+    <div class="grid2">
+      <label>基本エナジー（任意）<input name="energy" type="number" inputmode="numeric" value="${esc(r.energy)}" placeholder="ゲーム内の値"></label>
+      <label>レシピボーナス%（任意）<input name="bonus" type="number" step="0.01" value="${esc(r.bonus)}"></label>
+    </div>
+    <div class="small muted">基本エナジーを空欄にすると、食材とレシピボーナスから計算します。</div>
+    <div class="actions">
+      <button class="btn primary">保存</button>
+      ${isNew ? "" : `<button type="button" class="btn danger" data-del="recipes" data-id="${id}">削除</button>`}
+    </div>
+  </form>`;
+}
+
 const notFound = () => '<div class="empty">見つかりませんでした。<a href="#/">ホームへ</a></div>';
 
 /* ================= ルーター ================= */
@@ -444,12 +602,16 @@ function render() {
     mon: () => viewMon(id),
     "mon-edit": () => viewMonEdit(id, q),
     settings: viewSettings,
+    recipes: () => viewRecipes(q),
+    recipe: () => viewRecipe(id),
+    "recipe-edit": () => viewRecipeEdit(id),
   };
   app.innerHTML = (views[name] || notFound)();
   document.querySelectorAll("nav.tabs a").forEach((a) => {
     const t = a.dataset.tab;
     const active = t === name || (t === "strategies" && name.startsWith("strategy")) ||
-      (t === "goals" && name.startsWith("goal")) || (t === "mons" && name.startsWith("mon"));
+      (t === "goals" && name.startsWith("goal")) || (t === "mons" && name.startsWith("mon")) ||
+      (t === "recipes" && name.startsWith("recipe"));
     a.classList.toggle("on", active);
   });
   if (name === "mon-edit") setupMonForm();
@@ -483,10 +645,10 @@ function setupMonForm() {
     const t = ingType.value || "AAA";
     const opt = (slot, letters, cur) => `<select data-slot="${slot}">${letters.split("").filter((ch) => p.ing["ABC".indexOf(ch)]).map((ch) => {
       const ing = p.ing["ABC".indexOf(ch)];
-      return `<option value="${ch}" ${ch === cur ? "selected" : ""}>${esc(ing.n)} ×${ing.c[slot]}</option>`;
+      return `<option value="${ch}" ${ch === cur ? "selected" : ""}>${esc(ing.n)} ×${ing.c[slot] ?? "?"}</option>`;
     }).join("")}</select>`;
     ingBox.innerHTML = `<div class="grid3">
-      <div class="fixed">${esc(p.ing[0].n)} ×${p.ing[0].c[0]}</div>
+      <div class="fixed">${esc(p.ing[0].n)} ×${p.ing[0].c[0] ?? "?"}</div>
       ${opt(1, "AB", t[1])}
       ${opt(2, "ABC", t[2])}
     </div>`;
@@ -526,6 +688,13 @@ async function saveForm(form) {
       field: d.field, role: d.role, conditions: d.conditions, doneCriteria: d.doneCriteria,
       memo: d.memo, order: Number(d.order) || 0,
     };
+  } else if (kind === "recipe") {
+    col = "recipes";
+    const ings = [0, 1, 2, 3, 4, 5]
+      .map((i) => ({ n: d[`ingN${i}`], c: Number(d[`ingC${i}`]) || 0 }))
+      .filter((x) => x.n && x.c > 0);
+    if (!ings.length) { toast("食材を1つ以上入れてください"); return; }
+    obj = { name: d.name, cat: d.cat, ings, energy: Number(d.energy) || 0, bonus: Number(d.bonus) || 0 };
   } else {
     col = "mons";
     const p = PK_BY_JA.get(d.pokemonJa);
@@ -548,7 +717,7 @@ async function saveForm(form) {
       if (g && statusIdx(g.status) < 2) await store.update("goals", obj.goalId, { status: "secured" });
     }
     toast("保存しました");
-    dest = { strategies: "strategy", goals: "goal", mons: "mon" }[col];
+    dest = { strategies: "strategy", goals: "goal", mons: "mon", recipes: "recipe" }[col];
     location.hash = `#/${dest}/${newId}`;
   } catch (e) {
     console.error(e);
@@ -558,7 +727,7 @@ async function saveForm(form) {
 }
 
 async function removeItem(col, id) {
-  const names = { strategies: "この方針", goals: "この目標", mons: "この個体" };
+  const names = { strategies: "この方針", goals: "この目標", mons: "この個体", recipes: "このレシピ" };
   const extra = col === "mons" ? "\n（博士に送った場合は、状態を「手放した」にすると履歴が残ります）" : "";
   if (!confirm(`${names[col]}を削除します。元に戻せません。よろしいですか？${extra}`)) return;
   if (col === "strategies") {
@@ -567,9 +736,15 @@ async function removeItem(col, id) {
   if (col === "goals") {
     for (const m of rows("mons").filter((m) => m.goalId === id)) await store.update("mons", m.id, { goalId: "" });
   }
+  if (col === "strategies") {
+    for (const [rid, f] of Object.entries(DB.recipeFlags)) {
+      if (f.strategyId === id) await store.set("recipeFlags", rid, { strategyId: "" });
+    }
+  }
+  if (col === "recipes" && DB.recipeFlags[id]) await store.remove("recipeFlags", id);
   await store.remove(col, id);
   toast("削除しました");
-  location.hash = { strategies: "#/strategies", goals: "#/goals", mons: "#/mons" }[col];
+  location.hash = { strategies: "#/strategies", goals: "#/goals", mons: "#/mons", recipes: "#/recipes" }[col];
 }
 
 function exportJson() {
@@ -585,9 +760,9 @@ async function importJson(file) {
   try {
     const obj = JSON.parse(await file.text());
     const data = obj.data || obj;
-    if (!data.strategies && !data.goals && !data.mons) throw new Error("形式が違います");
+    if (!COLLECTIONS.some((c) => data[c])) throw new Error("形式が違います");
     if (!confirm("今のデータをすべてこのファイルの内容で置き換えます。よろしいですか？")) return;
-    await store.replaceAll({ strategies: data.strategies || {}, goals: data.goals || {}, mons: data.mons || {} });
+    await store.replaceAll(Object.fromEntries(COLLECTIONS.map((c) => [c, data[c] || {}])));
     toast("読み込みました");
   } catch (e) {
     toast("読み込みに失敗しました: " + e.message);
@@ -609,12 +784,24 @@ function bindEvents() {
       form.elements.approach.blur();
       toast("アプローチを更新しました");
     }
+    if (form.dataset.quick === "recipeFlag") {
+      await store.set("recipeFlags", form.dataset.id, {
+        memo: form.elements.memo.value.trim(), strategyId: form.elements.strategyId.value,
+      });
+      document.activeElement && document.activeElement.blur();
+      toast("保存しました");
+    }
   });
 
   app.addEventListener("click", async (e) => {
-    const el = e.target.closest("[data-goal-status],[data-del],[data-act]");
+    const el = e.target.closest("[data-goal-status],[data-del],[data-act],[data-recipe-target]");
     if (!el) return;
-    if (el.dataset.goalStatus) {
+    if (el.dataset.recipeTarget) {
+      const rid = el.dataset.recipeTarget;
+      const on = !(DB.recipeFlags[rid] || {}).target;
+      await store.set("recipeFlags", rid, { target: on });
+      toast(on ? "目指す料理にしました" : "目指す料理から外しました");
+    } else if (el.dataset.goalStatus) {
       await store.update("goals", el.dataset.id, { status: el.dataset.goalStatus });
       toast(`「${label(GOAL_STATUS, el.dataset.goalStatus)}」にしました`);
     } else if (el.dataset.del) {
@@ -632,6 +819,7 @@ function bindEvents() {
     if (el.dataset.act === "import" && el.files[0]) importJson(el.files[0]);
     if (el.dataset.nav) {
       const { name, q } = parseRoute();
+      if (el.dataset.nav === "pot") { try { localStorage.setItem("pss-pot", el.value); } catch (err) { /* 無視 */ } }
       if (el.value) q.set(el.dataset.nav, el.value); else q.delete(el.dataset.nav);
       location.hash = `#/${name}?${q.toString()}`;
     }

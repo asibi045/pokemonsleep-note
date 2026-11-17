@@ -30,10 +30,19 @@ ja_type = ja_data["types"]
 
 SPECIALTY = {"Berries": "きのみ", "Ingredients": "食材", "Skills": "スキル", "All": "オール"}
 
+# 計算機側のデータがまだ未登録（unknown）の新ポケモンを手動で補う。
+# 計算機のデータが更新されたら、この補正は自動的に不要になる（unknown でない値はそのまま使う）。
+# 値: スロット番号(0=Lv1枠) -> 食材の日本語名
+MANUAL_INGREDIENTS = {
+    "Cottonee": {0: "ひとくちナッツ"},
+    "Whimsicott": {0: "ひとくちナッツ"},
+}
+
 entries = []
 used_ja = set()
 for p in pokemon:
-    if p.get("skill") == "unknown":
+    # スキルも名前の日本語訳もない（未実装の）データは除外
+    if p.get("skill") == "unknown" and p["name"] not in ja_names:
         continue
     ja = ja_names.get(p["name"], p["name"])
     base = ja
@@ -43,26 +52,42 @@ for p in pokemon:
         n += 1
     used_ja.add(ja)
     ings = []
-    for key in ("ing1", "ing2", "ing3"):
+    tentative = False
+    for slot, key in enumerate(("ing1", "ing2", "ing3")):
         ing = p.get(key)
-        if ing:
+        if not ing:
+            continue
+        name = ing["name"]
+        if name.startswith("unknown"):
+            if "mythIng" in p:
+                # 幻のポケモンは食材を選ぶ方式なので、固定の食材はない
+                ings.append({"n": "（幻：選択式）", "c": [None, None, None]})
+                continue
+            manual = MANUAL_INGREDIENTS.get(p["name"], {}).get(slot)
+            tentative = True
+            # 個数が分からないので None（画面では「?」と表示）
+            ings.append({"n": manual or "（未判明）", "c": [None, None, None]})
+        else:
             ings.append({
-                "n": ja_ing.get(ing["name"], ing["name"]),
+                "n": ja_ing.get(name, name),
                 "c": [ing.get("c1", 0), ing.get("c2", 0), ing.get("c3", 0)],
             })
     skill = p.get("skill", "")
-    skill_ja = ja_skills.get(skill, {}).get("name", skill)
+    skill_ja = "（未登録）" if skill == "unknown" else ja_skills.get(skill, {}).get("name", skill)
     entries.append({
         "en": p["name"],
         "ja": ja,
         "id": p["id"],
         "form": p.get("form", ""),
         "type": ja_type.get(p["type"], p["type"]),
-        "sp": SPECIALTY.get(p["specialty"], p["specialty"]),
+        "sp": SPECIALTY.get(p["specialty"], "未登録"),
+        "tentative": tentative,
         "skill": skill_ja,
         "ing": ings,
         "myth": "mythIng" in p,
         "final": p.get("isFullyEvolved", False),
+        # 進化系統の判定用（最初の進化前の図鑑番号。なければ自分）
+        "anc": p.get("ancestor") or p["id"],
     })
 
 # サブスキル: nitoyon SubSkill.subSkillNames の順番（シリアライズの index に使う）
