@@ -473,7 +473,6 @@ function viewMonEdit(id, q) {
   <form class="form compact" data-form="mon" data-id="${id}">
     <label>ポケモン<input name="pokemonJa" list="pokedex" required value="${esc(defaultPk ? pkName(defaultPk) : "")}" placeholder="名前を入力して候補から選択" autocomplete="off"></label>
     <div class="small muted" data-pkinfo></div>
-    <label>ニックネーム<input name="nickname" value="${esc(m.nickname)}"></label>
     <label>レベル<input name="level" type="number" min="1" max="100" inputmode="numeric" value="${esc(m.level)}"></label>
     <fieldset><legend>食材（Lv1 / Lv30 / Lv60）</legend><div data-ings></div></fieldset>
     <fieldset><legend>サブスキル</legend>
@@ -671,8 +670,11 @@ function render() {
 }
 
 // データが変わったら再描画。ただし入力中のフォームは消さない
+let firstRenderDone = false;
 function onData(data) {
   DB = data;
+  // 最初の1回は必ず描画する（編集画面を直接開いたときに「読み込み中」のまま止まらないように）
+  if (!firstRenderDone) { firstRenderDone = true; render(); return; }
   const typing = app.contains(document.activeElement) && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName);
   if (isEditRoute() || typing) { pendingRender = true; return; }
   render();
@@ -755,7 +757,7 @@ async function saveForm(form) {
       pokemon: p.en, level: Number(d.level) || 1, // スキルLvは入力欄をなくしたので、登録済みの値を引き継ぐ（新規は1）
       skillLv: Number((DB.mons[id] || {}).skillLv) || 1, nature: d.nature,
       ingType: d.ingType || "AAA", subskills: [0, 1, 2, 3, 4].map((i) => d[`sub${i}`] || ""),
-      status: d.status, goalId: d.goalId, nickname: d.nickname, obtainedAt: d.obtainedAt, memo: d.memo,
+      status: d.status, goalId: d.goalId, nickname: (DB.mons[id] || {}).nickname || "", obtainedAt: d.obtainedAt, memo: d.memo,
     };
   }
   const btn = form.querySelector("button.primary");
