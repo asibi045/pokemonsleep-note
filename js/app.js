@@ -42,6 +42,17 @@ const PK_BY_JA = new Map(POKEDEX.pokemon.map((p) => [p.ja, p]));
 const SUB_BY_EN = new Map(POKEDEX.subskills.map((s) => [s.en, s]));
 const NAT_BY_EN = new Map(POKEDEX.natures.map((n) => [n.en, n]));
 
+// 一覧で使うサブスキルの略称
+const SUB_ABBR = {
+  "Helping Speed S": "おてS", "Helping Speed M": "おてM",
+  "Ingredient Finder S": "食確S", "Ingredient Finder M": "食確M",
+  "Skill Trigger S": "スキ確S", "Skill Trigger M": "スキ確M",
+  "Skill Level Up S": "スキレベS", "Skill Level Up M": "スキレベM",
+  "Inventory Up S": "所持S", "Inventory Up M": "所持M", "Inventory Up L": "所持L",
+  "Berry Finding S": "きのS", "Helping Bonus": "おてボ", "Energy Recovery Bonus": "げんボ",
+  "Sleep EXP Bonus": "睡ボ", "Research EXP Bonus": "リサボ", "Dream Shard Bonus": "ゆめボ",
+};
+
 /* ================= 状態 ================= */
 let store;
 let DB = emptyData();
@@ -157,21 +168,21 @@ function pokemonWithIngredient(ingName) {
 /* ================= カード部品 ================= */
 function monCard(m, { showGoal = true } = {}) {
   const p = PK_BY_EN.get(m.pokemon);
+  // サブスキルは解放レベル順に略称で、横2つずつ並べる
   const subs = (m.subskills || [])
     .map((en, i) => {
       if (!en) return "";
       const s = SUB_BY_EN.get(en);
       const locked = m.level && Number(m.level) < SUB_LV[i] ? " locked" : "";
-      return `<span class="chip ${s ? s.color : ""}${locked}">${esc(s ? s.ja : en)}</span>`;
+      return `<span class="chip ${s ? s.color : ""}${locked}">${esc(SUB_ABBR[en] || (s ? s.ja : en))}</span>`;
     })
     .join("");
   const goal = m.goalId && DB.goals[m.goalId];
   // 個体は開くとすぐ編集画面にする
   return `<a class="card" href="#/mon-edit/${m.id}">
-    <b>${esc(pkName(m.pokemon))}</b>${m.nickname ? ` <span class="small muted">「${esc(m.nickname)}」</span>` : ""}
-    <div class="row wrap gap"><span class="badge plain">Lv${esc(m.level || "?")}</span>${monBadge(m.status)}</div>
-    <div class="small muted">${esc(natureText(m.nature))}${p ? `<br>${esc(p.skill)} Lv${esc(m.skillLv || 1)}` : ""}</div>
-    ${subs ? `<div class="chips">${subs}</div>` : ""}
+    <div class="mon-head"><b>${esc(pkName(m.pokemon))}</b>${monBadge(m.status)}</div>
+    <div class="small muted">Lv${esc(m.level || "?")}${m.nickname ? ` 「${esc(m.nickname)}」` : ""}${m.nature ? ` ・ ${esc(natureText(m.nature))}` : ""}</div>
+    ${subs ? `<div class="subgrid">${subs}</div>` : ""}
     ${ingText(m) ? `<div class="small">食材: ${esc(ingText(m))}</div>` : ""}
     ${m.memo ? `<div class="memo">${esc(m.memo)}</div>` : ""}
     ${showGoal && goal ? `<div class="small muted">目標: ${esc(goal.title)}</div>` : ""}
@@ -203,33 +214,33 @@ function viewHome() {
   const kinshu = Number((DB.notes.items || {}).kinshu) || 0;
 
   return `
-  <h1>ホーム</h1>
-  <section class="card counter">
-    <b>金種</b>
-    <div class="row gap">
+  <div class="row between">
+    <h1>ホーム</h1>
+    <div class="counter" title="金種">
+      <span class="small muted">金種</span>
       <button class="btn" data-item-step="-1" aria-label="金種を1減らす">−</button>
       <input type="number" inputmode="numeric" min="0" value="${kinshu}" data-item="kinshu" aria-label="金種の数">
       <button class="btn" data-item-step="1" aria-label="金種を1増やす">＋</button>
     </div>
-  </section>
-  <section>
-    <h2>検討メモ</h2>
-    <form class="quick" data-quick="note" data-id="home">
-      <textarea name="text" rows="5" placeholder="考え中のことを自由にメモ">${esc(note)}</textarea>
-      <button class="btn sm">メモを保存</button>
-    </form>
-  </section>
+  </div>
   <section>
     <div class="row between"><h2>進行中の方針</h2><a class="btn sm" href="#/strategy-edit/new">＋ 方針</a></div>
     ${cards(strats.map((s) => strategyCard(s, goals)).join(""), "まだ方針がありません。「＋ 方針」から作成しましょう。")}
+  </section>
+  <section>
+    <h2>厳選中の個体</h2>
+    ${cards(hunting.map((m) => monCard(m)).join(""), "厳選中の個体はありません")}
   </section>
   <section>
     <div class="row between"><h2>目指す料理</h2><a class="btn sm" href="#/recipes?cat=all">料理一覧</a></div>
     ${cards(targets.map(recipeCard).join(""), "料理一覧で「目指す料理にする」を押すとここに出ます")}
   </section>
   <section>
-    <h2>厳選中の個体</h2>
-    ${cards(hunting.map((m) => monCard(m)).join(""), "厳選中の個体はありません")}
+    <h2>検討メモ</h2>
+    <form class="quick" data-quick="note" data-id="home">
+      <textarea name="text" rows="4" placeholder="考え中のことを自由にメモ">${esc(note)}</textarea>
+      <button class="btn sm">メモを保存</button>
+    </form>
   </section>
   <section>
     <div class="row between"><h2>目標</h2><a class="btn sm" href="#/goal-edit/new">＋ 目標</a></div>
@@ -459,25 +470,22 @@ function viewMonEdit(id, q) {
   <a class="back" href="${esc(backHash("#/mons"))}">← 戻る</a>
   <div class="row between"><h1>${isNew ? "個体を登録" : "個体を編集"}</h1>
     ${!isNew && p ? `<a class="btn sm" href="${esc(calcUrl(m))}" target="_blank" rel="noopener">にとよん計算機 ↗</a>` : ""}</div>
-  <form class="form" data-form="mon" data-id="${id}">
+  <form class="form compact" data-form="mon" data-id="${id}">
     <label>ポケモン<input name="pokemonJa" list="pokedex" required value="${esc(defaultPk ? pkName(defaultPk) : "")}" placeholder="名前を入力して候補から選択" autocomplete="off"></label>
     <div class="small muted" data-pkinfo></div>
-    <div class="grid2">
-      <label>レベル<input name="level" type="number" min="1" max="100" inputmode="numeric" value="${esc(m.level)}"></label>
-      <label>スキルLv<select name="skillLv">${[1, 2, 3, 4, 5, 6, 7, 8].map((n) => `<option ${n === Number(m.skillLv || 1) ? "selected" : ""}>${n}</option>`).join("")}</select></label>
-    </div>
-    <label>性格<select name="nature"><option value="">（未設定）</option>${natureOpts}</select></label>
+    <label>ニックネーム<input name="nickname" value="${esc(m.nickname)}"></label>
+    <label>レベル<input name="level" type="number" min="1" max="100" inputmode="numeric" value="${esc(m.level)}"></label>
     <fieldset><legend>食材（Lv1 / Lv30 / Lv60）</legend><div data-ings></div></fieldset>
     <fieldset><legend>サブスキル</legend>
       ${SUB_LV.map((lv, i) => `<label class="inline">Lv${lv}<select name="sub${i}"><option value="">（未設定）</option>${subOpts((m.subskills || [])[i])}</select></label>`).join("")}
     </fieldset>
+    <label>性格<select name="nature"><option value="">（未設定）</option>${natureOpts}</select></label>
     <label>状態<select name="status">${MON_STATUS.map((x) => `<option value="${x.k}" ${x.k === (m.status || "hunting") ? "selected" : ""}>${x.label}</option>`).join("")}</select></label>
+    <label>メモ（一覧やホームに常に表示されます）<textarea name="memo" rows="3" placeholder="例：おてスピMが来たら本命。Lv25で判断">${esc(m.memo)}</textarea></label>
     <label>目標<select name="goalId"><option value="">（なし）</option>
       ${rows("goals").map((g) => `<option value="${g.id}" ${g.id === m.goalId ? "selected" : ""}>${esc(g.title)}</option>`).join("")}
     </select></label>
-    <label>ニックネーム<input name="nickname" value="${esc(m.nickname)}"></label>
     <label>入手日<input name="obtainedAt" type="date" value="${esc(m.obtainedAt)}"></label>
-    <label>メモ（一覧やホームに常に表示されます）<textarea name="memo" rows="4" placeholder="例：おてスピMが来たら本命。Lv25で判断">${esc(m.memo)}</textarea></label>
     <input type="hidden" name="ingType" value="${esc(m.ingType || "AAA")}">
     <div class="actions">
       <button class="btn primary">保存</button>
@@ -744,7 +752,8 @@ async function saveForm(form) {
     const p = PK_BY_JA.get(d.pokemonJa);
     if (!p) { toast("ポケモンを候補から選んでください"); return; }
     obj = {
-      pokemon: p.en, level: Number(d.level) || 1, skillLv: Number(d.skillLv) || 1, nature: d.nature,
+      pokemon: p.en, level: Number(d.level) || 1, // スキルLvは入力欄をなくしたので、登録済みの値を引き継ぐ（新規は1）
+      skillLv: Number((DB.mons[id] || {}).skillLv) || 1, nature: d.nature,
       ingType: d.ingType || "AAA", subskills: [0, 1, 2, 3, 4].map((i) => d[`sub${i}`] || ""),
       status: d.status, goalId: d.goalId, nickname: d.nickname, obtainedAt: d.obtainedAt, memo: d.memo,
     };
