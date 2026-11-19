@@ -24,7 +24,18 @@ const STRAT_STATUS = [
 ];
 const FIELDS = ["ワカクサ本島", "シアンの砂浜", "トープ洞窟", "ウノハナ雪原", "ラピスラズリ湖畔", "ゴールド旧発電所"];
 const ROLES = ["きのみ", "食材", "スキル", "サポート"];
-const SUB_LV = [10, 25, 50, 75, 100];
+// サブスキルの解放レベル（現行仕様）
+const SUB_LV = [10, 25, 50, 70, 80];
+
+// 性格はプルダウンで上昇する能力ごとにまとめる
+const NATURE_GROUPS = ["おてスピ", "食材", "スキル", "げんき", "EXP", null];
+// サブスキルは同じ系統の S / M / L が並ぶ順にする
+const SUBSKILL_ORDER = [
+  "Helping Speed S", "Helping Speed M", "Ingredient Finder S", "Ingredient Finder M",
+  "Skill Trigger S", "Skill Trigger M", "Skill Level Up S", "Skill Level Up M",
+  "Inventory Up S", "Inventory Up M", "Inventory Up L", "Berry Finding S", "Helping Bonus",
+  "Energy Recovery Bonus", "Sleep EXP Bonus", "Research EXP Bonus", "Dream Shard Bonus",
+];
 
 const PK_BY_EN = new Map(POKEDEX.pokemon.map((p) => [p.en, p]));
 const PK_BY_JA = new Map(POKEDEX.pokemon.map((p) => [p.ja, p]));
@@ -35,6 +46,8 @@ const NAT_BY_EN = new Map(POKEDEX.natures.map((n) => [n.en, n]));
 let store;
 let DB = emptyData();
 let pendingRender = false;
+let lastViewHash = null; // 直前に見ていた（編集画面以外の）画面。編集画面の「戻る」と保存後の戻り先に使う
+const backHash = (fallback) => lastViewHash || fallback;
 const app = document.getElementById("app");
 
 /* ================= ユーティリティ ================= */
@@ -48,6 +61,8 @@ const rows = (col) =>
     .sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
 const pkName = (en) => (PK_BY_EN.get(en) || {}).ja || en || "（未選択）";
 const fmtDate = (t) => (t ? new Date(t).toLocaleDateString("ja-JP") : "");
+// カードを横2列で並べる
+const cards = (html, empty) => (html ? `<div class="cards">${html}</div>` : `<div class="empty">${empty}</div>`);
 
 function md(text) {
   if (!text) return '<p class="muted">（本文なし）</p>';
@@ -119,10 +134,12 @@ const findRecipe = (id) => allRecipes().find((r) => r.id === id);
 
 function recipeCard(r) {
   return `<a class="card" href="#/recipe/${r.id}">
-    <div class="row between"><b>${r.flag.target ? "⭐ " : ""}${esc(r.name)}</b><span class="badge plain">${r.total}個</span></div>
-    <div class="small muted">${esc(catLabel(r.cat))} ・ 基本エナジー ${r.energy.toLocaleString()}${r.builtin ? "" : " ・ 追加レシピ"}</div>
+    <b>${esc(r.name)}</b>
+    <div class="row wrap gap">${r.flag.target ? '<span class="badge s4">目指す</span>' : ""}<span class="badge plain">${r.total}個</span></div>
+    <div class="small muted">${esc(catLabel(r.cat))} ・ エナジー ${r.energy.toLocaleString()}${r.builtin ? "" : " ・ 追加"}</div>
     <div class="chips">${r.ings.map((x) => `<span class="chip ing">${esc(x.n)}×${x.c}</span>`).join("")}</div>
     ${r.flag.memo ? `<div class="memo">${esc(r.flag.memo)}</div>` : ""}
+    ${r.flag.strategyId && DB.strategies[r.flag.strategyId] ? `<div class="small muted">方針: ${esc(DB.strategies[r.flag.strategyId].title)}</div>` : ""}
   </a>`;
 }
 
@@ -149,18 +166,15 @@ function monCard(m, { showGoal = true } = {}) {
     })
     .join("");
   const goal = m.goalId && DB.goals[m.goalId];
-  return `<a class="card" href="#/mon/${m.id}">
-    <div class="row wrap gap">
-      <b>${esc(pkName(m.pokemon))}</b>
-      ${m.nickname ? `<span class="muted">「${esc(m.nickname)}」</span>` : ""}
-      <span class="badge plain">Lv${esc(m.level || "?")}</span>
-      ${monBadge(m.status)}
-    </div>
-    <div class="small muted">${esc(natureText(m.nature))}${p ? ` ・ ${esc(p.skill)} Lv${esc(m.skillLv || 1)}` : ""}</div>
+  // 個体は開くとすぐ編集画面にする
+  return `<a class="card" href="#/mon-edit/${m.id}">
+    <b>${esc(pkName(m.pokemon))}</b>${m.nickname ? ` <span class="small muted">「${esc(m.nickname)}」</span>` : ""}
+    <div class="row wrap gap"><span class="badge plain">Lv${esc(m.level || "?")}</span>${monBadge(m.status)}</div>
+    <div class="small muted">${esc(natureText(m.nature))}${p ? `<br>${esc(p.skill)} Lv${esc(m.skillLv || 1)}` : ""}</div>
     ${subs ? `<div class="chips">${subs}</div>` : ""}
     ${ingText(m) ? `<div class="small">食材: ${esc(ingText(m))}</div>` : ""}
     ${m.memo ? `<div class="memo">${esc(m.memo)}</div>` : ""}
-    ${showGoal && goal ? `<div class="small muted">🎯 ${esc(goal.title)}</div>` : ""}
+    ${showGoal && goal ? `<div class="small muted">目標: ${esc(goal.title)}</div>` : ""}
   </a>`;
 }
 
@@ -169,11 +183,12 @@ function goalCard(g) {
   const main = mons.find((m) => m.status === "main");
   const strat = g.strategyId && DB.strategies[g.strategyId];
   return `<a class="card" href="#/goal/${g.id}">
-    <div class="row between"><b>${esc(g.title || "（無題）")}</b>${goalBadge(g.status)}</div>
+    <b>${esc(g.title || "（無題）")}</b>
+    <div>${goalBadge(g.status)}</div>
     <div class="small muted">${[g.field, g.role, g.pokemon ? pkName(g.pokemon) : ""].filter(Boolean).map(esc).join(" ・ ")}</div>
     ${main ? `<div class="small">本命: ${esc(pkName(main.pokemon))} Lv${esc(main.level || "?")}</div>` : mons.length ? `<div class="small">候補 ${mons.length}体</div>` : ""}
     ${g.doneCriteria ? `<div class="small muted">完了基準: ${esc(g.doneCriteria)}</div>` : ""}
-    ${strat ? `<div class="small muted">📘 ${esc(strat.title)}</div>` : ""}
+    ${strat ? `<div class="small muted">方針: ${esc(strat.title)}</div>` : ""}
   </a>`;
 }
 
@@ -182,41 +197,52 @@ function viewHome() {
   const strats = rows("strategies").filter((s) => (s.status || "active") === "active");
   const goals = rows("goals");
   const hunting = rows("mons").filter((m) => (m.status || "hunting") === "hunting");
-  const { counts } = goalProgress(goals);
   const openGoals = goals.filter((g) => g.status !== "done").sort((a, b) => statusIdx(a.status) - statusIdx(b.status));
   const targets = allRecipes().filter((r) => r.flag.target);
+  const note = (DB.notes.home || {}).text || "";
+  const kinshu = Number((DB.notes.items || {}).kinshu) || 0;
 
   return `
   <h1>ホーム</h1>
-  <section>
-    <h2>役割の確保状況</h2>
-    <div class="statgrid">
-      ${GOAL_STATUS.map((s, i) => `<a class="stat s${i}" href="#/goals?status=${s.k}"><b>${counts[i]}</b><span>${s.label}</span></a>`).join("")}
+  <section class="card counter">
+    <b>金種</b>
+    <div class="row gap">
+      <button class="btn" data-item-step="-1" aria-label="金種を1減らす">−</button>
+      <input type="number" inputmode="numeric" min="0" value="${kinshu}" data-item="kinshu" aria-label="金種の数">
+      <button class="btn" data-item-step="1" aria-label="金種を1増やす">＋</button>
     </div>
   </section>
   <section>
-    <div class="row between"><h2>進行中の方針</h2><a class="btn sm" href="#/strategy-edit/new">＋ 方針</a></div>
-    ${strats.length ? strats.map((s) => {
-      const sg = goals.filter((g) => g.strategyId === s.id);
-      return `<a class="card" href="#/strategy/${s.id}">
-        <b>${esc(s.title || "（無題）")}</b>
-        ${s.approach ? `<div class="approach">▶ ${esc(s.approach)}</div>` : ""}
-        ${progressBar(sg)}
-      </a>`;
-    }).join("") : '<div class="empty">まだ方針がありません。「＋ 方針」から作成しましょう。</div>'}
+    <h2>検討メモ</h2>
+    <form class="quick" data-quick="note" data-id="home">
+      <textarea name="text" rows="5" placeholder="考え中のことを自由にメモ">${esc(note)}</textarea>
+      <button class="btn sm">メモを保存</button>
+    </form>
   </section>
   <section>
-    <div class="row between"><h2>⭐ 目指す料理</h2><a class="btn sm" href="#/recipes?cat=all">料理一覧</a></div>
-    ${targets.length ? targets.map(recipeCard).join("") : '<div class="empty">料理一覧で「☆ 目指す料理にする」を押すとここに出ます</div>'}
+    <div class="row between"><h2>進行中の方針</h2><a class="btn sm" href="#/strategy-edit/new">＋ 方針</a></div>
+    ${cards(strats.map((s) => strategyCard(s, goals)).join(""), "まだ方針がありません。「＋ 方針」から作成しましょう。")}
+  </section>
+  <section>
+    <div class="row between"><h2>目指す料理</h2><a class="btn sm" href="#/recipes?cat=all">料理一覧</a></div>
+    ${cards(targets.map(recipeCard).join(""), "料理一覧で「目指す料理にする」を押すとここに出ます")}
   </section>
   <section>
     <h2>厳選中の個体</h2>
-    ${hunting.length ? hunting.map((m) => monCard(m)).join("") : '<div class="empty">厳選中の個体はありません</div>'}
+    ${cards(hunting.map((m) => monCard(m)).join(""), "厳選中の個体はありません")}
   </section>
   <section>
-    <div class="row between"><h2>未完了の目標</h2><a class="btn sm" href="#/goal-edit/new">＋ 目標</a></div>
-    ${openGoals.length ? openGoals.map(goalCard).join("") : '<div class="empty">未完了の目標はありません</div>'}
+    <div class="row between"><h2>目標</h2><a class="btn sm" href="#/goal-edit/new">＋ 目標</a></div>
+    ${cards(openGoals.map(goalCard).join(""), "未完了の目標はありません")}
   </section>`;
+}
+
+function strategyCard(s, goals) {
+  return `<a class="card" href="#/strategy/${s.id}">
+    <b>${esc(s.title || "（無題）")}</b>
+    ${s.approach ? `<div class="approach">アプローチ: ${esc(s.approach)}</div>` : ""}
+    ${progressBar(goals.filter((g) => g.strategyId === s.id))}
+  </a>`;
 }
 
 function viewStrategies() {
@@ -227,11 +253,7 @@ function viewStrategies() {
   <div class="row between"><h1>方針</h1><a class="btn" href="#/strategy-edit/new">＋ 新しい方針</a></div>
   ${groups.map(({ st, items }) => items.length ? `
     <h2>${st.label}（${items.length}）</h2>
-    ${items.map((s) => `<a class="card" href="#/strategy/${s.id}">
-      <b>${esc(s.title || "（無題）")}</b>
-      ${s.approach ? `<div class="approach">▶ ${esc(s.approach)}</div>` : ""}
-      ${progressBar(goals.filter((g) => g.strategyId === s.id))}
-    </a>`).join("")}` : "").join("") || '<div class="empty">まだ方針がありません</div>'}`;
+    ${cards(items.map((s) => strategyCard(s, goals)).join(""), "")}` : "").join("") || '<div class="empty">まだ方針がありません</div>'}`;
 }
 
 function viewStrategy(id) {
@@ -249,11 +271,11 @@ function viewStrategy(id) {
   <section class="mdbody">${md(s.body)}</section>
   <section>
     <div class="row between"><h2>目標（${goals.length}）</h2><a class="btn sm" href="#/goal-edit/new?strategy=${id}">＋ 目標</a></div>
-    ${goals.map(goalCard).join("") || '<div class="empty">この方針の目標はまだありません</div>'}
+    ${cards(goals.map(goalCard).join(""), "この方針の目標はまだありません")}
   </section>
   ${(() => {
     const rs = allRecipes().filter((r) => r.flag.strategyId === id);
-    return rs.length ? `<section><h2>関連する料理（${rs.length}）</h2>${rs.map(recipeCard).join("")}</section>` : "";
+    return rs.length ? `<section><h2>関連する料理（${rs.length}）</h2>${cards(rs.map(recipeCard).join(""), "")}</section>` : "";
   })()}
   <div class="actions"><a class="btn" href="#/strategy-edit/${id}">方針を編集</a></div>
   <div class="small muted">更新: ${fmtDate(s.updatedAt)}</div>`;
@@ -287,7 +309,7 @@ function viewGoals(q) {
   const shown = GOAL_STATUS.filter((s) => (filter === "open" ? s.k !== "done" : filter === "all" ? true : s.k === filter));
   const chip = (k, text) => `<a class="fchip ${filter === k ? "on" : ""}" href="#/goals?status=${k}${strat ? `&strategy=${strat}` : ""}">${text}</a>`;
   return `
-  <div class="row between"><h1>目標（役割の枠）</h1><a class="btn" href="#/goal-edit/new">＋ 新しい目標</a></div>
+  <div class="row between"><h1>目標</h1><a class="btn" href="#/goal-edit/new">＋ 新しい目標</a></div>
   <div class="fchips">${chip("open", "未完了")}${chip("all", "すべて")}${GOAL_STATUS.map((s) => chip(s.k, s.label)).join("")}</div>
   <select class="filter" data-nav="strategy">
     <option value="">すべての方針</option>
@@ -295,7 +317,7 @@ function viewGoals(q) {
   </select>
   ${shown.map((st) => {
     const items = list.filter((g) => (g.status || "unsecured") === st.k);
-    return items.length ? `<h2>${goalBadge(st.k)} ${items.length}</h2>${items.map(goalCard).join("")}` : "";
+    return items.length ? `<h2>${goalBadge(st.k)} ${items.length}</h2>${cards(items.map(goalCard).join(""), "")}` : "";
   }).join("") || '<div class="empty">該当する目標はありません</div>'}`;
 }
 
@@ -308,7 +330,7 @@ function viewGoal(id) {
   <a class="back" href="#/goals">← 目標一覧</a>
   <h1>${esc(g.title || "（無題）")}</h1>
   <div class="small muted">${[g.field, g.role, g.pokemon ? pkName(g.pokemon) : ""].filter(Boolean).map(esc).join(" ・ ")}</div>
-  ${strat ? `<div class="small">📘 <a href="#/strategy/${g.strategyId}">${esc(strat.title)}</a></div>` : ""}
+  ${strat ? `<div class="small">方針: <a href="#/strategy/${g.strategyId}">${esc(strat.title)}</a></div>` : ""}
   <section>
     <label class="small muted">状態（タップで変更）</label>
     <div class="steps">
@@ -322,7 +344,20 @@ function viewGoal(id) {
   </section>
   <section>
     <div class="row between"><h2>割り当てた個体（${mons.length}）</h2><a class="btn sm" href="#/mon-edit/new?goal=${id}">＋ 個体を登録</a></div>
-    ${mons.map((m) => monCard(m, { showGoal: false })).join("") || '<div class="empty">まだ個体がありません</div>'}
+    ${cards(mons.map((m) => monCard(m, { showGoal: false })).join(""), "まだ個体がありません")}
+    ${(() => {
+      // 登録済みの個体（ほかの目標の個体や未割り当ての個体）をこの目標に割り当てる
+      const others = rows("mons").filter((m) => m.goalId !== id && m.status !== "released");
+      if (!others.length) return "";
+      const sameFirst = others.sort((a, b) => (b.pokemon === g.pokemon) - (a.pokemon === g.pokemon));
+      return `<form class="quick" data-quick="assign" data-id="${id}">
+        <label>登録済みの個体を割り当てる</label>
+        <div class="row gap"><select name="monId">${sameFirst.map((m) => {
+          const cur = m.goalId && DB.goals[m.goalId];
+          return `<option value="${m.id}">${esc(pkName(m.pokemon))} Lv${esc(m.level || "?")}${m.nickname ? `「${esc(m.nickname)}」` : ""}${cur ? `（目標: ${esc(cur.title)}）` : ""}</option>`;
+        }).join("")}</select><button class="btn">割り当て</button></div>
+      </form>`;
+    })()}
   </section>
   <div class="actions"><a class="btn" href="#/goal-edit/${id}">目標を編集</a></div>`;
 }
@@ -368,7 +403,8 @@ function viewMons(q) {
   <div class="row between"><h1>個体</h1><a class="btn" href="#/mon-edit/new">＋ 個体を登録</a></div>
   <div class="fchips">${chip("active", "手持ち")}${chip("all", "すべて")}${MON_STATUS.map((s) => chip(s.k, s.label)).join("")}</div>
   <input class="filter" data-nav="q" value="${esc(word)}" placeholder="名前・ニックネーム・メモで検索">
-  ${list.map((m) => monCard(m)).join("") || '<div class="empty">該当する個体はありません</div>'}`;
+  <div class="small muted">${list.length}体</div>
+  ${cards(list.map((m) => monCard(m)).join(""), "該当する個体はありません")}`;
 }
 
 function viewMon(id) {
@@ -409,9 +445,20 @@ function viewMonEdit(id, q) {
   if (!m) return notFound();
   const goal = m.goalId && DB.goals[m.goalId];
   const defaultPk = !m.pokemon && goal && goal.pokemon ? goal.pokemon : m.pokemon;
+  const p = PK_BY_EN.get(m.pokemon);
+  const natureOpts = NATURE_GROUPS.map((up) => {
+    const list = POKEDEX.natures.filter((n) => n.up === up);
+    return `<optgroup label="${up ? `${up}↑` : "無補正"}">${list.map((n) =>
+      `<option value="${n.en}" ${n.en === m.nature ? "selected" : ""}>${esc(n.up ? `${n.ja}（${n.up}↑ ${n.down}↓）` : n.ja)}</option>`).join("")}</optgroup>`;
+  }).join("");
+  const subOpts = (cur) => SUBSKILL_ORDER.map((en) => {
+    const s = SUB_BY_EN.get(en);
+    return `<option value="${en}" ${en === cur ? "selected" : ""}>${esc(s.ja)}</option>`;
+  }).join("");
   return `
-  <a class="back" href="${isNew ? "#/mons" : `#/mon/${id}`}">← 戻る</a>
-  <h1>${isNew ? "個体を登録" : "個体を編集"}</h1>
+  <a class="back" href="${esc(backHash("#/mons"))}">← 戻る</a>
+  <div class="row between"><h1>${isNew ? "個体を登録" : "個体を編集"}</h1>
+    ${!isNew && p ? `<a class="btn sm" href="${esc(calcUrl(m))}" target="_blank" rel="noopener">にとよん計算機 ↗</a>` : ""}</div>
   <form class="form" data-form="mon" data-id="${id}">
     <label>ポケモン<input name="pokemonJa" list="pokedex" required value="${esc(defaultPk ? pkName(defaultPk) : "")}" placeholder="名前を入力して候補から選択" autocomplete="off"></label>
     <div class="small muted" data-pkinfo></div>
@@ -419,14 +466,10 @@ function viewMonEdit(id, q) {
       <label>レベル<input name="level" type="number" min="1" max="100" inputmode="numeric" value="${esc(m.level)}"></label>
       <label>スキルLv<select name="skillLv">${[1, 2, 3, 4, 5, 6, 7, 8].map((n) => `<option ${n === Number(m.skillLv || 1) ? "selected" : ""}>${n}</option>`).join("")}</select></label>
     </div>
-    <label>性格<select name="nature"><option value="">（未設定）</option>
-      ${POKEDEX.natures.map((n) => `<option value="${n.en}" ${n.en === m.nature ? "selected" : ""}>${esc(n.up ? `${n.ja}（${n.up}↑ ${n.down}↓）` : `${n.ja}（無補正）`)}</option>`).join("")}
-    </select></label>
+    <label>性格<select name="nature"><option value="">（未設定）</option>${natureOpts}</select></label>
     <fieldset><legend>食材（Lv1 / Lv30 / Lv60）</legend><div data-ings></div></fieldset>
     <fieldset><legend>サブスキル</legend>
-      ${SUB_LV.map((lv, i) => `<label class="inline">Lv${lv}<select name="sub${i}"><option value="">（未設定）</option>
-        ${POKEDEX.subskills.map((s) => `<option value="${s.en}" ${s.en === (m.subskills || [])[i] ? "selected" : ""}>${esc(s.ja)}</option>`).join("")}
-      </select></label>`).join("")}
+      ${SUB_LV.map((lv, i) => `<label class="inline">Lv${lv}<select name="sub${i}"><option value="">（未設定）</option>${subOpts((m.subskills || [])[i])}</select></label>`).join("")}
     </fieldset>
     <label>状態<select name="status">${MON_STATUS.map((x) => `<option value="${x.k}" ${x.k === (m.status || "hunting") ? "selected" : ""}>${x.label}</option>`).join("")}</select></label>
     <label>目標<select name="goalId"><option value="">（なし）</option>
@@ -489,7 +532,7 @@ function viewRecipes(q) {
   };
   return `
   <div class="row between"><h1>料理</h1><a class="btn" href="#/recipe-edit/new">＋ レシピを追加</a></div>
-  <div class="fchips">${chip("all", "すべて")}${chip("target", "⭐ 目指す")}${CATEGORIES.map((c) => chip(c.k, c.label)).join("")}</div>
+  <div class="fchips">${chip("all", "すべて")}${chip("target", "目指す")}${CATEGORIES.map((c) => chip(c.k, c.label)).join("")}</div>
   <div class="grid2">
     <label class="small muted">食材で絞り込み<select data-nav="ing"><option value="">すべての食材</option>
       ${INGREDIENTS.map((n) => `<option ${n === ing ? "selected" : ""}>${esc(n)}</option>`).join("")}
@@ -502,7 +545,7 @@ function viewRecipes(q) {
     <option value="game" ${sort === "game" ? "selected" : ""}>ゲーム内の順</option>
   </select></label>
   <div class="small muted">${list.length}件</div>
-  ${list.map(recipeCard).join("") || '<div class="empty">該当するレシピはありません</div>'}`;
+  ${cards(list.map(recipeCard).join(""), "該当するレシピはありません")}`;
 }
 
 function viewRecipe(id) {
@@ -519,7 +562,7 @@ function viewRecipe(id) {
     <div><span>基本エナジー（料理Lv1）</span><div>${r.energy.toLocaleString()}${r.bonus ? `（レシピボーナス ${r.bonus}%）` : ""}</div></div>
   </section>
   <div class="actions">
-    <button class="btn ${r.flag.target ? "primary" : ""}" data-recipe-target="${r.id}">${r.flag.target ? "⭐ 目指す料理に設定中" : "☆ 目指す料理にする"}</button>
+    <button class="btn ${r.flag.target ? "primary" : ""}" data-recipe-target="${r.id}">${r.flag.target ? "目指す料理に設定中（押すと外す）" : "目指す料理にする"}</button>
     ${r.builtin ? "" : `<a class="btn" href="#/recipe-edit/${r.id}">レシピを編集</a>`}
   </div>
   <form class="quick" data-quick="recipeFlag" data-id="${r.id}">
@@ -531,14 +574,14 @@ function viewRecipe(id) {
   </form>
   <section>
     <h2>食材と、持ってくるポケモン</h2>
-    <div class="small muted">最終進化のみ表示。★は手持ちにいる系統です。</div>
+    <div class="small muted">最終進化のみ表示。「手持ち」は手持ちにいる系統です。</div>
     ${r.ings.map((x) => {
       const mons = pokemonWithIngredient(x.n);
       const owned = mons.filter((m) => ownedAnc.has(m.p.anc)).length;
       return `<details class="card">
         <summary><b>${esc(x.n)} ×${x.c}</b> <span class="small muted">${mons.length}種${owned ? ` ・ 手持ち系統 ${owned}` : ""}</span></summary>
         <div class="plist">${mons.map(({ p, slot }) => `<div class="${ownedAnc.has(p.anc) ? "owned" : ""}">
-          ${ownedAnc.has(p.anc) ? "★ " : ""}${esc(p.ja)} <span class="small muted">${p.tentative ? "新ポケモン（枠・個数は未確定）" : `${SLOT[slot]} ×${p.ing[slot].c[slot]} ・ ${esc(p.sp)}`}</span>
+          ${ownedAnc.has(p.anc) ? '<span class="badge s4">手持ち</span> ' : ""}${esc(p.ja)} <span class="small muted">${p.tentative ? "新ポケモン（枠・個数は未確定）" : `${SLOT[slot]} ×${p.ing[slot].c[slot]} ・ ${esc(p.sp)}`}</span>
         </div>`).join("") || '<div class="muted small">該当なし</div>'}</div>
       </details>`;
     }).join("")}
@@ -615,6 +658,7 @@ function render() {
     a.classList.toggle("on", active);
   });
   if (name === "mon-edit") setupMonForm();
+  if (!name.endsWith("-edit")) lastViewHash = location.hash || "#/";
   pendingRender = false;
 }
 
@@ -717,7 +761,13 @@ async function saveForm(form) {
       if (g && statusIdx(g.status) < 2) await store.update("goals", obj.goalId, { status: "secured" });
     }
     toast("保存しました");
-    dest = { strategies: "strategy", goals: "goal", mons: "mon", recipes: "recipe" }[col];
+    if (col === "mons") {
+      // 個体は詳細画面を持たないので、開く前にいた画面へ戻る
+      const to = backHash("#/mons");
+      if (location.hash === to) render(); else location.hash = to;
+      return;
+    }
+    dest = { strategies: "strategy", goals: "goal", recipes: "recipe" }[col];
     location.hash = `#/${dest}/${newId}`;
   } catch (e) {
     console.error(e);
@@ -784,6 +834,17 @@ function bindEvents() {
       form.elements.approach.blur();
       toast("アプローチを更新しました");
     }
+    if (form.dataset.quick === "note") {
+      await store.set("notes", form.dataset.id, { text: form.elements.text.value });
+      form.elements.text.blur();
+      toast("メモを保存しました");
+    }
+    if (form.dataset.quick === "assign") {
+      const monId = form.elements.monId.value;
+      await store.update("mons", monId, { goalId: form.dataset.id });
+      document.activeElement && document.activeElement.blur();
+      toast("個体を割り当てました");
+    }
     if (form.dataset.quick === "recipeFlag") {
       await store.set("recipeFlags", form.dataset.id, {
         memo: form.elements.memo.value.trim(), strategyId: form.elements.strategyId.value,
@@ -794,9 +855,14 @@ function bindEvents() {
   });
 
   app.addEventListener("click", async (e) => {
-    const el = e.target.closest("[data-goal-status],[data-del],[data-act],[data-recipe-target]");
+    const el = e.target.closest("[data-goal-status],[data-del],[data-act],[data-recipe-target],[data-item-step]");
     if (!el) return;
-    if (el.dataset.recipeTarget) {
+    if (el.dataset.itemStep) {
+      // 金種の数を ±1（0 未満にはしない）
+      const cur = Number((DB.notes.items || {}).kinshu) || 0;
+      const next = Math.max(0, cur + Number(el.dataset.itemStep));
+      await store.set("notes", "items", { kinshu: next });
+    } else if (el.dataset.recipeTarget) {
       const rid = el.dataset.recipeTarget;
       const on = !(DB.recipeFlags[rid] || {}).target;
       await store.set("recipeFlags", rid, { target: on });
@@ -817,6 +883,11 @@ function bindEvents() {
   app.addEventListener("change", (e) => {
     const el = e.target;
     if (el.dataset.act === "import" && el.files[0]) importJson(el.files[0]);
+    if (el.dataset.item) {
+      // 数を直接入力したとき
+      store.set("notes", "items", { [el.dataset.item]: Math.max(0, Math.floor(Number(el.value) || 0)) });
+      toast("保存しました");
+    }
     if (el.dataset.nav) {
       const { name, q } = parseRoute();
       if (el.dataset.nav === "pot") { try { localStorage.setItem("pss-pot", el.value); } catch (err) { /* 無視 */ } }

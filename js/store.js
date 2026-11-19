@@ -3,7 +3,8 @@
 import { firebaseConfig } from "./firebase-config.js";
 
 // recipes: 自分で追加したレシピ / recipeFlags: レシピごとの「目指す」印やメモ（ID はレシピID）
-export const COLLECTIONS = ["strategies", "goals", "mons", "recipes", "recipeFlags"];
+// notes: ホームの検討メモなど（ID は "home"）
+export const COLLECTIONS = ["strategies", "goals", "mons", "recipes", "recipeFlags", "notes"];
 export const emptyData = () => Object.fromEntries(COLLECTIONS.map((c) => [c, {}]));
 
 const FB = "https://www.gstatic.com/firebasejs/10.12.2";

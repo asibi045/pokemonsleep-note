@@ -1,0 +1,4 @@
+# GitHub に上げないもの
+.claude/
+pokesleep-note-upload/
+*.zip
